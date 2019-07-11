@@ -1,0 +1,728 @@
+---
+title: "Weekly Year-Over-Year Difference in Temperature"
+author: "Stephen Ewing"
+date: "December 17, 2018"
+output:
+  html_document:
+    code_folding: hide
+    df_print: paged
+    theme: lumen
+    self-contained: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.height = 7, fig.width = 7)
+```
+
+```{r lastStableDate, eval=FALSE}
+library(prism)
+library(raster)
+library(lubridate)
+library(geosphere)
+library(RColorBrewer)
+library(png)
+library(grid)
+library(rasterVis)
+library(rgdal)
+library(scales)
+library(viridis) 
+library(ggthemes)
+library(tidyverse)
+library(lubridate)
+library(DomoR)
+library(choroplethr)
+
+#get_prism_dailys(type="tmax", minDate = "2017-01-01", maxDate = "2018-11-29", keepZip=F)
+#get_prism_dailys(type="tmin", minDate = "2017-01-01", maxDate = "2018-11-29", keepZip=F)
+#get_prism_dailys(type="tmean", minDate = "2017-01-01", maxDate = "2018-11-29", keepZip=F)
+#get_prism_dailys(type="ppt", minDate = "2017-01-01", maxDate = "2018-11-29", keepZip=F)
+
+retailCal <- read.csv("C:/Users/sewing/OneDrive - Do My Own/NOAA/4-4-5-calendar.csv",
+                      stringsAsFactors = FALSE) %>% 
+  mutate(Actual.Date = date(mdy(Actual.Date)),
+         X2018.equiv = date(mdy(X2018.equiv))) %>%
+  filter(Retail.Year > 2016,
+         Retail.Year < 2019) %>%
+  select(Actual.Date, Retail.Week, Retail.Year, Retail.DayofYear) %>%
+  spread(Retail.Year, Actual.Date) %>%
+  mutate(meanFile2017 = character(1),
+         meanFile2018 = character(1),
+         meanPath2017 = character(1),
+         meanPath2018 = character(1)) %>%
+  filter(!is.na(`2017`))
+
+RetailWeeks2018 <- read.csv("C:/Users/sewing/OneDrive - Do My Own/NOAA/4-4-5-calendar.csv",
+                      stringsAsFactors = FALSE) %>% 
+  filter(Retail.Year == 2018) %>%
+  select(Retail.Week, Actual.Date) %>%
+  mutate(Actual.Date = mdy(Actual.Date)) %>%
+  group_by(Retail.Week) %>%
+  summarise(max_date = max(Actual.Date),
+            min_date = min(Actual.Date)) %>%
+  mutate(min_month = as.character(month(min_date, label = TRUE)),
+         max_month = as.character(month(max_date, label = TRUE)),
+         months = ifelse(min_month == max_month, min_month, paste0(min_month, "/", max_month))) %>%
+  select(Retail.Week, months)
+
+options(prism.path = "C:/Users/sewing/OneDrive - Do My Own/NOAA/PRISM_Files")
+prismFileList <- ls_prism_data(absPath = TRUE)
+
+stableMeans <- prismFileList[which(grepl("_tmean_stable_4kmD1_",
+                                         prismFileList$files)),] %>%
+  mutate(Date = ymd(str_sub(files, start = 26, end = -5)))
+
+lastStableDate <- max(stableMeans$Date)
+
+get_prism_dailys(type="tmean",
+                 minDate = lastStableDate,
+                 maxDate = Sys.Date(),
+                 keepZip=F)
+
+prismFileList <- ls_prism_data(absPath = TRUE)
+
+stableMeans <- prismFileList[which(grepl("_tmean_stable_4kmD1_",
+                                         prismFileList$files)),] %>%
+  mutate(Date = ymd(str_sub(files, start = 26, end = -5)))
+
+newLastStableDate <- max(stableMeans$Date)
+
+provisionalMeans <- prismFileList[which(grepl("_tmean_provisional_4kmD1_",
+                                              prismFileList$files)),] %>%
+  mutate(Date = ymd(str_sub(files, start = -12, end = -5))) %>%
+  filter(Date > ymd(newLastStableDate))
+
+lastProvisionalDate <- max(provisionalMeans$Date)
+
+earlyMeans <- prismFileList[which(grepl("_tmean_early_4kmD1_",
+                                              prismFileList$files)),] %>%
+  mutate(Date = ymd(str_sub(files, start = -12, end = -5))) %>%
+  filter(Date > ymd(lastProvisionalDate))
+
+lastEarlyDate <- max(earlyMeans$Date)
+
+meansFiles <- stableMeans %>%
+  rbind(provisionalMeans) %>%
+  rbind(earlyMeans)
+
+prismComps <- retailCal %>%
+  mutate(meanFile2017 = meansFiles$files[which(meansFiles$Date == retailCal$`2017`)],
+         meanFile2018 = ifelse(`2018` > lastEarlyDate,
+                               "Future Date",
+                               meansFiles$files[which(meansFiles$Date == retailCal$`2018`)]),
+         meanPath2017 = meansFiles$abs_path[which(meansFiles$Date == retailCal$`2017`)],
+         meanPath2018 = ifelse(`2018` > lastEarlyDate,
+                               "Future Date",
+                               meansFiles$abs_path[which(meansFiles$Date == retailCal$`2018`)]))
+  
+dailyRasters <- prismComps %>%
+  mutate(`2017 Rasters` = list(length = 1),
+         `2018 Rasters` = list(length = 1))
+
+i <- 1
+
+for(i in 1:dim(dailyRasters)[1]){
+  dailyRasters$`2017 Rasters`[i] <- raster(dailyRasters$meanPath2017[i])
+  i = i + 1
+} 
+ 
+i <- 1 
+
+for(i in 1:table(dailyRasters$`2018`<lastEarlyDate)[2]){
+dailyRasters$`2018 Rasters`[i] <- raster(dailyRasters$meanPath2018[i])
+i = i + 1
+}
+
+anomCalc <- function(x, y) {
+  return(x - y)
+}
+
+avgWeek <- function(a, b, c, d, e, f, g) {
+  return((((a+b+c+d+e+f+g)/7)*(9/5))+32)
+}
+i <- 0
+while(i < week(lastEarlyDate)-1){
+  i = i+1
+  weekOverlay17 <- overlay(dailyRasters$`2017 Rasters`[[(7*(i-1))+1]],
+                          dailyRasters$`2017 Rasters`[[(7*(i-1))+2]],
+                          dailyRasters$`2017 Rasters`[[(7*(i-1))+3]],
+                          dailyRasters$`2017 Rasters`[[(7*(i-1))+4]],
+                          dailyRasters$`2017 Rasters`[[(7*(i-1))+5]],
+                          dailyRasters$`2017 Rasters`[[(7*(i-1))+6]],
+                          dailyRasters$`2017 Rasters`[[(7*(i-1))+7]],
+                          fun = avgWeek)
+  
+  writeRaster(weekOverlay17,
+              filename = paste0("C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Rasters/Week_", i, "_2017_avg_temp"),
+              overwrite=TRUE)
+  
+  weekOverlay18 <- overlay(dailyRasters$`2018 Rasters`[[(7*(i-1))+1]],
+                          dailyRasters$`2018 Rasters`[[(7*(i-1))+2]],
+                          dailyRasters$`2018 Rasters`[[(7*(i-1))+3]],
+                          dailyRasters$`2018 Rasters`[[(7*(i-1))+4]],
+                          dailyRasters$`2018 Rasters`[[(7*(i-1))+5]],
+                          dailyRasters$`2018 Rasters`[[(7*(i-1))+6]],
+                          dailyRasters$`2018 Rasters`[[(7*(i-1))+7]],
+                          fun = avgWeek)
+  
+  writeRaster(weekOverlay18,
+              filename = paste0("C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Rasters/Week_", i, "_2018_avg_temp"),
+              overwrite=TRUE)
+  
+  weekYoYDiff <- overlay(weekOverlay18, weekOverlay17, fun = anomCalc)
+  
+  writeRaster(weekYoYDiff,
+              filename = paste0("C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Rasters/Week_", i, "_YoY_diff_avg_temp"),
+              overwrite=TRUE)
+
+}
+
+YoYFiles <- dir(path = "C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Rasters/",
+                pattern = "YoY_diff_avg_temp.grd",
+                include.dirs = TRUE,
+                full.names = TRUE)
+```
+
+```{r eval=FALSE}
+us_map <- map_data("state")
+i <- 1
+
+while(i < week(Sys.Date())){
+  r <- raster(paste0("C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Rasters/Week_",
+                        i,
+                        "_YoY_diff_avg_temp.grd"))
+  r_spdf <- as(r, "SpatialPixelsDataFrame")
+  r_df <- as.data.frame(r_spdf)
+  colnames(r_df) <- c("value", "x", "y")
+  
+  rp <- ggplot() +
+    geom_path(
+      data = us_map,
+      aes(x = long,
+          y = lat,
+          group = group),
+      color = "white",
+      size = 0.1) +
+    coord_equal() +
+    theme_map() +
+    theme(legend.position = "bottom") +
+    theme(legend.key.width = unit(2, "cm")) +
+    labs(
+      x = NULL,
+      y = NULL,
+      title = paste0(RetailWeeks2018[i, 2], " - Week ", i, " YoY Diff in Temperature")
+    ) +
+    geom_raster(data = r_df, aes(x = x, y = y, fill = value)) + 
+    scale_fill_distiller(palette = "RdYlBu", limits = c(-30, 30)) 
+  
+  fname <- paste0('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_',
+                  i,
+                  '_2018_less_2017_Plot.png')
+  ggsave(rp, file=fname)
+  i = i+1
+}
+
+
+```
+
+```{r, include=FALSE, eval=FALSE}
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_1_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_1_", YoYFiles))]),
+  main = "January - Week 1 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_2_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_2_", YoYFiles))]),
+  main = "January - Week 2 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_3_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_3_", YoYFiles))]),
+  main = "January - Week 3 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_4_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_4_", YoYFiles))]),
+  main = "January - Week 4 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_5_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_5_", YoYFiles))]),
+  main = "January/February - Week 5 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_6_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_6_", YoYFiles))]),
+  main = "February - Week 6 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_7_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_7_", YoYFiles))]),
+  main = "February - Week 7 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_8_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_8_", YoYFiles))]),
+  main = "February - Week 8 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_9_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_9_", YoYFiles))]),
+  main = "February/March - Week 9 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_10_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_10_", YoYFiles))]),
+  main = "March - Week 10 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_11_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_11_", YoYFiles))]),
+  main = "March - Week 11 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_12_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_12_", YoYFiles))]),
+  main = "March - Week 12 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_13_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_13_", YoYFiles))]),
+  main = "March/April - Week 13 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_14_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_14_", YoYFiles))]),
+  main = "April - Week 14 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_15_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_15_", YoYFiles))]),
+  main = "April - Week 15 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_16_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_16_", YoYFiles))]),
+  main = "April - Week 16 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_17_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_17_", YoYFiles))]),
+  main = "April - Week 17 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_18_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_18_", YoYFiles))]),
+  main = "April/May - Week 18 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_19_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_19_", YoYFiles))]),
+  main = "May - Week 19 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_20_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_20_", YoYFiles))]),
+  main = "May - Week 20 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_21_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_21_", YoYFiles))]),
+  main = "May - Week 21 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_22_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_22_", YoYFiles))]),
+  main = "May/June - Week 22 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_23_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_23_", YoYFiles))]),
+  main = "June - Week 23 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_24_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_24_", YoYFiles))]),
+  main = "June - Week 24 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_25_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_25_", YoYFiles))]),
+  main = "June - Week 25 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_26_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_26_", YoYFiles))]),
+  main = "June/July - Week 26 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_27_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_27_", YoYFiles))]),
+  main = "July - Week 27 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_28_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_28_", YoYFiles))]),
+  main = "July - Week 28 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_29_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_29_", YoYFiles))]),
+  main = "July - Week 29 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_30_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_30_", YoYFiles))]),
+  main = "July - Week 30 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_31_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_31_", YoYFiles))]),
+  main = "July/August - Week 31 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_32_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_32_", YoYFiles))]),
+  main = "August - Week 32 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_33_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_33_", YoYFiles))]),
+  main = "August - Week 33 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_34_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_34_", YoYFiles))]),
+  main = "August - Week 34 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_35_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_35_", YoYFiles))]),
+  main = "August/September - Week 35 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_36_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_36_", YoYFiles))]),
+  main = "September - Week 36 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_37_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_37_", YoYFiles))]),
+  main = "September - Week 37 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_38_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_38_", YoYFiles))]),
+  main = "September - Week 38 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_39_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_39_", YoYFiles))]),
+  main = "September - Week 39 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_40_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_40_", YoYFiles))]),
+  main = "September/October - Week 40 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_41_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_41_", YoYFiles))]),
+  main = "October - Week 41 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_42_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_42_", YoYFiles))]),
+  main = "October - Week 42 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_43_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_43_", YoYFiles))]),
+  main = "October - Week 43 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_44_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_44_", YoYFiles))]),
+  main = "October/November - Week 44 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_45_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_45_", YoYFiles))]),
+  main = "November - Week 45 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_46_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_46_", YoYFiles))]),
+  main = "November - Week 46 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_47_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_47_", YoYFiles))]),
+  main = "November - Week 47 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_48_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_48_", YoYFiles))]),
+  main = "November/December - Week 48 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_49_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_49_", YoYFiles))]),
+  main = "December - Week 49 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+
+png('C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_50_2018_less_2017_Plot.png')
+plot(
+  raster(YoYFiles[which(grepl("Week_50_", YoYFiles))]),
+  main = "December - Week 50 2018 avg less 2017 avg",
+  zlim = c(-30, 30),
+  col = rev(brewer.pal(11, "RdYlBu"))
+)
+dev.off()
+```
+
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_1_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_2_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_3_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_4_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_5_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_6_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_7_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_8_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_9_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_10_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_11_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_12_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_13_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_14_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_15_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_16_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_17_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_18_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_19_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_20_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_21_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_22_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_23_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_24_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_25_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_26_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_27_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_28_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_29_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_30_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_31_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_32_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_33_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_34_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_35_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_36_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_37_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_38_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_39_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_40_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_41_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_42_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_43_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_44_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_45_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_46_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_47_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_48_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_49_2018_less_2017_Plot.png){width=125%}
+![](C:/Users/sewing/OneDrive - Do My Own/NOAA/Weekly_Plots/Week_50_2018_less_2017_Plot.png){width=125%}
