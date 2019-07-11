@@ -1,0 +1,17 @@
+base
+DomoR
+tidyverse
+ggplot2
+tibble
+tidyr
+readr
+purrr
+dplyr
+stringr
+forcats
+Matrix
+arules
+arulesViz
+bindrcpp
+rJava
+iplots
